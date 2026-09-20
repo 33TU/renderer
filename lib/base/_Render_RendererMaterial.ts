@@ -44,7 +44,10 @@ export class _Render_RendererMaterial extends _Render_MaterialPassBase {
 
 		this.requiresBlending = true;
 
-		this.shader.setBlendMode((material.blendMode == BlendMode.NORMAL) ? BlendMode.LAYER : material.blendMode);
+		// The composite already includes the destination, so replace its pixels.
+		// Source-over would blend the backdrop twice when retained for a mask.
+		this.shader.setBlendMode(material.useNonNativeBlend ? BlendMode.NORMAL
+			: (material.blendMode == BlendMode.NORMAL) ? BlendMode.LAYER : material.blendMode);
 	}
 
 	public _includeDependencies(shader: ShaderBase): void {

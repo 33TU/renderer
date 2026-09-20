@@ -171,7 +171,10 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 					parent.view.projection = new PerspectiveProjection();
 					parent._initRender(backdrop);
 					parent.executeRender();
-					parent.resetHead();
+					// A masked composite covers only part of the backdrop. Keep
+					// earlier siblings so their pixels outside the mask survive.
+					if (!this._parentNode?.getMaskOwners()?.length)
+						parent.resetHead();
 				} finally {
 					parent.view.target = previousTarget;
 					parent.view.projection = projection;
