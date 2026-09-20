@@ -10,6 +10,12 @@ import { _Shader_TextureBase } from './_Shader_TextureBase';
 export class _Render_RendererMaterial extends _Render_MaterialPassBase {
 	public _texture: _Shader_TextureBase;
 
+	protected _pRequiresRender(): boolean {
+		// A composite includes preceding siblings, which can change even
+		// when the blended object's own bitmap cache is unchanged.
+		return this._invalidRender || (<CacheRenderer> this.material).useNonNativeBlend;
+	}
+
 	public init(material: CacheRenderer, renderElements: _Render_ElementsBase): void {
 		super.init(material, renderElements);
 

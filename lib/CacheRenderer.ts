@@ -140,73 +140,73 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 
 		const stage = this.stage;
 		const useNonNativeBlend = this.useNonNativeBlend;
-		const targetImage = <Image2D> (useNonNativeBlend ? this.parentRenderer.style.image : this._style.image);
+		const targetImage = <Image2D> this._style.image;
 
 		if (!targetImage) {
 			return super.render(enableDepthAndStencil, surfaceSelector, mipmapSelector, maskConfig);
 		}
 
-		// WE MUST store older render target config,
-		// because node can have cached child, that can be filtered
-		this.stage.pushRenderTargetConfig();
-
+		// Nested caches and filters must restore the caller's render target.
+		stage.pushRenderTargetConfig();
+		const manager = stage.filterManager;
 		const msaa = stage.context.glVersion === 2 && StageSettings.ENABLE_MULTISAMPLE_TEXTURE;
+		const temporaryImages: Image2D[] = [];
+		const temporary = (multisample: boolean = false): Image2D => {
+			const image = manager.popTemp(targetImage.width, targetImage.height, multisample);
+			temporaryImages.push(image);
+			return image;
+		};
 
-		// we not require use TMP texture when not have MSAA
-		const sourceImage: Image2D = (msaa)
-			? stage.filterManager.popTemp(targetImage.width, targetImage.height, true)
-			: targetImage;
+		try {
+			// The source must be isolated from the backdrop even without MSAA.
+			let sourceImage = (msaa || useNonNativeBlend) ? temporary(msaa) : targetImage;
 
-		//for DefaultRenderer when child has a blendmode applied
-		if (useNonNativeBlend) {
-			const proj = this.parentRenderer.view.projection;
-			this.parentRenderer.view.projection = new PerspectiveProjection();
-			this.parentRenderer.view.target = targetImage;
-			//this.parentRenderer.disableClear = true;
-			this.parentRenderer._initRender(targetImage);
-			this.parentRenderer.executeRender();
-			this.parentRenderer.resetHead();
-			//this.parentRenderer.disableClear = false;
-			this.parentRenderer.view.target = null;
-			this.parentRenderer.view.projection = proj;
-			this._disableClear = true;
+			if (useNonNativeBlend) {
+				const parent = this.parentRenderer;
+				const projection = parent.view.projection;
+				const previousTarget = parent.view.target;
+				// Preserve antialiasing for all preceding siblings, including text.
+				const backdrop = msaa ? temporary(true) : targetImage;
+				try {
+					parent.view.projection = new PerspectiveProjection();
+					parent._initRender(backdrop);
+					parent.executeRender();
+					parent.resetHead();
+				} finally {
+					parent.view.target = previousTarget;
+					parent.view.projection = projection;
+				}
+				if (backdrop !== targetImage)
+					manager.copyPixels(backdrop, targetImage, targetImage.rect, targetImage.rect.topLeft);
+				this._disableClear = false;
+			}
+
+			this._initRender(sourceImage);
+			super.render(enableDepthAndStencil, surfaceSelector, mipmapSelector, maskConfig);
+
+			//@ts-ignore
+			const filters = container.filters;
+			let filtered = false;
+			if (filters && filters.length > 0) {
+				const scale = this.getBoundsScale();
+				filters.forEach((e) => e && (e.imageScale = scale));
+				// Filters affect the isolated object, never its captured backdrop.
+				const filterTarget = useNonNativeBlend ? temporary() : targetImage;
+				filtered = manager.applyFilters(
+					sourceImage, filterTarget, targetImage.rect, targetImage.rect, filters);
+				if (filtered)
+					sourceImage = filterTarget;
+			}
+
+			if (useNonNativeBlend || (!filtered && sourceImage !== targetImage)) {
+				manager.copyPixels(sourceImage, targetImage, targetImage.rect, targetImage.rect.topLeft,
+					useNonNativeBlend, useNonNativeBlend ? <string> container.blendMode : '');
+			}
+		} finally {
+			for (const image of temporaryImages)
+				manager.pushTemp(image);
+			stage.popRenderTarget();
 		}
-
-		this._initRender(sourceImage);
-		super.render(enableDepthAndStencil, surfaceSelector, mipmapSelector, maskConfig);
-
-		//@ts-ignore
-		const filters = container.filters;
-		const scale = this.getBoundsScale();
-		if (filters && filters.length > 0) {
-			filters.forEach((e) => e && (e.imageScale = scale));
-			stage.filterManager.applyFilters(
-				sourceImage,
-				targetImage, // because we use source as filter target - we not require copy
-				targetImage.rect,
-				targetImage.rect,
-				filters
-			);
-		} else if (msaa) {
-			// this is fast, it should only call blitFramebuffer,
-			// same as in regular MSAA
-			stage.filterManager.copyPixels(
-				sourceImage,
-				targetImage,
-				targetImage.rect,
-				targetImage.rect.topLeft,
-				useNonNativeBlend,
-				useNonNativeBlend ? <string> container.blendMode : ''
-			);
-		}
-
-		if (msaa) {
-			stage.filterManager.pushTemp(sourceImage);
-		}
-
-		// pop render target after any filters,
-		// required for deep filters (when node with filter has filtered child)
-		this.stage.popRenderTarget();
 	}
 
 	public _updateBounds(): void {

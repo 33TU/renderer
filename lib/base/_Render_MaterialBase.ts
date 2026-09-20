@@ -83,12 +83,16 @@ export class _Render_MaterialBase extends AbstractionBase {
 	}
 
 	public get renderOrderId(): number {
-		if (this._invalidRender)
+		if (this._pRequiresRender())
 			this._pUpdateRender();
 		if (this._invalidAnimation)
 			this._updateAnimation();
 
 		return this._renderOrderId;
+	}
+
+	protected _pRequiresRender(): boolean {
+		return this._invalidRender;
 	}
 
 	public get numPasses(): number {

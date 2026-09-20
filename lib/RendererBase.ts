@@ -258,8 +258,7 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 	public get useNonNativeBlend(): boolean {
 		return StageSettings.USE_NON_NATIVE_BLEND
 				&& (<ContainerNode> this._asset).container.blendMode
-				&& (<ContainerNode> this._asset).container.blendMode !== BlendMode.NORMAL
-				&& this.blendMode == BlendMode.LAYER;
+				&& !isNativeBlend(<string> (<ContainerNode> this._asset).container.blendMode);
 	}
 
 	constructor() {
@@ -406,8 +405,7 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 		 _backgroundImageRenderer.render();
 		 */
 
-		if (!StageSettings.USE_NON_NATIVE_BLEND || this._invalid)
-			this.traverse();
+		this.traverse();
 
 		this.executeRender(enableDepthAndStencil, surfaceSelector, mipmapSelector);
 
@@ -509,6 +507,10 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 			(!this.view.shareContext || this.view.target)
 				? ContextGLClearMask.ALL
 				: ContextGLClearMask.DEPTH);
+
+		// Each target has its own stencil buffer, including backdrop captures.
+		this._activeMaskOwners = null;
+		this._activeMasksDirty = true;
 
 		//initialise stencil
 		if (this._maskConfig)
@@ -950,7 +952,7 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 				parentBounds.height
 			);
 
-			this._style.image = <Image2D> this.parentRenderer.style.image;
+			this._parentPosition = this.parentRenderer.getParentPosition().clone();
 			this._style.sampler = new ImageSampler(false, false, false);
 		} else {
 			pad.setTo(
