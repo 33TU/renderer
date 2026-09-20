@@ -132,6 +132,10 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 		mipmapSelector: number = 0,
 		maskConfig: number = 0
 	): void {
+		const bounds = this.getPaddedBounds();
+		if (bounds.width <= 0 || bounds.height <= 0)
+			return;
+
 		const container = this.node.container;
 
 		const stage = this.stage;
@@ -170,10 +174,6 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 
 		this._initRender(sourceImage);
 		super.render(enableDepthAndStencil, surfaceSelector, mipmapSelector, maskConfig);
-
-		if (targetImage.width * targetImage.height === 0) {
-			throw new Error('Cannot have image with size 0 * 0');
-		}
 
 		//@ts-ignore
 		const filters = container.filters;
@@ -214,6 +214,10 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 
 		const image =  <Image2D> this._style.image;
 		const pad = this._paddedBounds;
+		// Do not allocate a zero-sized texture or shrink an existing cache to
+		// zero. Traversal skips it until content/bounds are invalidated again.
+		if (pad.width <= 0 || pad.height <= 0)
+			return;
 
 		if (image) {
 			(<Image2D> this._style.image)._setSize(pad.width, pad.height);
@@ -303,7 +307,8 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 		this.removeTexture(this._texture);
 		this._texture.clear();
 		this._texture = null;
-		this._style.image.clear();
+		if (this._style.image)
+			this._style.image.clear();
 		this._style.image = null;
 
 		(<ContainerNode> this._asset).view.stage.removeEventListener(StageEvent.INVALIDATE_SIZE, this._onSizeInvalidateDelegate);

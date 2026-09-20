@@ -713,6 +713,11 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 
 			traverser.renderableSorter = null;
 			traverser.parentRenderer = this;
+			const paddedBounds = traverser.getPaddedBounds();
+			// Empty or fully clipped caches have no quad to submit. Keep the
+			// renderer alive so normal invalidation can make it visible again.
+			if (paddedBounds.width <= 0 || paddedBounds.height <= 0)
+				return;
 			//if (this._invalid) {
 			this._renderEntity = this.abstractions.getAbstraction<RenderEntity>(node);
 
@@ -919,13 +924,13 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 
 		const bounds = this._boundsPicker.getBoxBounds(node, true, true);
 
-		if (!bounds) {
-			console.error('[CachedRenderer] Bounds invalid, supress calculation', node);
-			return;
-		}
-
-		if (isNaN(bounds.width) || isNaN(bounds.height)) {
-			console.error('[CachedRenderer] Bounds invalid (NaN), supress calculation', node);
+		// Timelines can temporarily contain no drawable children. Reset the
+		// previous frame's bounds rather than retaining a stale cache rectangle.
+		if (!bounds || !Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)
+			|| !Number.isFinite(bounds.width) || !Number.isFinite(bounds.height)) {
+			this._bounds.setTo(0, 0, 0, 0, 0, 0);
+			pad.setTo(0, 0, 0, 0);
+			this._parentPosition = new Vector3D();
 			return;
 		}
 
@@ -995,11 +1000,14 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 				if (pad.bottom > parentBounds.bottom - parentPosition.y)
 					pad.bottom = parentBounds.bottom - parentPosition.y;
 			}
-
-			if (pad.width * pad.height == 0) {
-				throw new Error('Cannot have image with size 0 * 0');
-			}
 		}
+
+		// Disjoint intersections can have negative extents. Neither these nor
+		// zero/non-finite dimensions are valid render targets.
+		if (!Number.isFinite(pad.x) || !Number.isFinite(pad.y)
+			|| !Number.isFinite(pad.width) || !Number.isFinite(pad.height)
+			|| pad.width <= 0 || pad.height <= 0)
+			pad.setTo(0, 0, 0, 0);
 	}
 
 	public _initRender(target: Image2D) {
