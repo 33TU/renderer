@@ -1006,8 +1006,21 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 		// zero/non-finite dimensions are valid render targets.
 		if (!Number.isFinite(pad.x) || !Number.isFinite(pad.y)
 			|| !Number.isFinite(pad.width) || !Number.isFinite(pad.height)
-			|| pad.width <= 0 || pad.height <= 0)
+			|| pad.width <= 0 || pad.height <= 0) {
 			pad.setTo(0, 0, 0, 0);
+		} else {
+			// Clipping against a scaled parent can leave a subpixel strip.
+			// Image2D rounds dimensions, so a positive extent below 0.5 would
+			// otherwise become a zero-sized GPU texture. Cover the complete
+			// intersection with integer pixels, keeping projection and UVs in
+			// sync with the allocated image.
+			const right = Math.ceil(pad.right);
+			const bottom = Math.ceil(pad.bottom);
+			pad.x = Math.floor(pad.x);
+			pad.y = Math.floor(pad.y);
+			pad.width = right - pad.x;
+			pad.height = bottom - pad.y;
+		}
 	}
 
 	public _initRender(target: Image2D) {
