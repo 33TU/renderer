@@ -978,17 +978,23 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 				this._parentPosition = new Vector3D();
 			}
 
-			if (pad.left < -parentPosition.x)
-				pad.left = -parentPosition.x;
+			// BitmapData.draw supplies its own projection/translation. Its local
+			// filter bounds are not in screen coordinates: clipping them to the
+			// screen origin can produce negative-sized render textures. Keep the
+			// full filter image; the destination render target clips the result.
+			if (!rootView.target) {
+				if (pad.left < -parentPosition.x)
+					pad.left = -parentPosition.x;
 
-			if (pad.top < -parentPosition.y)
-				pad.top = -parentPosition.y;
+				if (pad.top < -parentPosition.y)
+					pad.top = -parentPosition.y;
 
-			if (pad.right > parentBounds.right - parentPosition.x)
-				pad.right = parentBounds.right - parentPosition.x;
+				if (pad.right > parentBounds.right - parentPosition.x)
+					pad.right = parentBounds.right - parentPosition.x;
 
-			if (pad.bottom > parentBounds.bottom - parentPosition.y)
-				pad.bottom = parentBounds.bottom - parentPosition.y;
+				if (pad.bottom > parentBounds.bottom - parentPosition.y)
+					pad.bottom = parentBounds.bottom - parentPosition.y;
+			}
 
 			if (pad.width * pad.height == 0) {
 				throw new Error('Cannot have image with size 0 * 0');
