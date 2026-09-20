@@ -713,6 +713,11 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 
 			traverser.renderableSorter = null;
 			traverser.parentRenderer = this;
+			const paddedBounds = traverser.getPaddedBounds();
+			// Empty or fully clipped caches have no quad to submit. Keep the
+			// renderer alive so normal invalidation can make it visible again.
+			if (paddedBounds.width <= 0 || paddedBounds.height <= 0)
+				return;
 			//if (this._invalid) {
 			this._renderEntity = this.abstractions.getAbstraction<RenderEntity>(node);
 
@@ -919,13 +924,13 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 
 		const bounds = this._boundsPicker.getBoxBounds(node, true, true);
 
-		if (!bounds) {
-			console.error('[CachedRenderer] Bounds invalid, supress calculation', node);
-			return;
-		}
-
-		if (isNaN(bounds.width) || isNaN(bounds.height)) {
-			console.error('[CachedRenderer] Bounds invalid (NaN), supress calculation', node);
+		// Timelines can temporarily contain no drawable children. Reset the
+		// previous frame's bounds rather than retaining a stale cache rectangle.
+		if (!bounds || !Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)
+			|| !Number.isFinite(bounds.width) || !Number.isFinite(bounds.height)) {
+			this._bounds.setTo(0, 0, 0, 0, 0, 0);
+			pad.setTo(0, 0, 0, 0);
+			this._parentPosition = new Vector3D();
 			return;
 		}
 
@@ -978,21 +983,43 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 				this._parentPosition = new Vector3D();
 			}
 
-			if (pad.left < -parentPosition.x)
-				pad.left = -parentPosition.x;
+			// BitmapData.draw supplies its own projection/translation. Its local
+			// filter bounds are not in screen coordinates: clipping them to the
+			// screen origin can produce negative-sized render textures. Keep the
+			// full filter image; the destination render target clips the result.
+			if (!rootView.target) {
+				if (pad.left < -parentPosition.x)
+					pad.left = -parentPosition.x;
 
-			if (pad.top < -parentPosition.y)
-				pad.top = -parentPosition.y;
+				if (pad.top < -parentPosition.y)
+					pad.top = -parentPosition.y;
 
-			if (pad.right > parentBounds.right - parentPosition.x)
-				pad.right = parentBounds.right - parentPosition.x;
+				if (pad.right > parentBounds.right - parentPosition.x)
+					pad.right = parentBounds.right - parentPosition.x;
 
-			if (pad.bottom > parentBounds.bottom - parentPosition.y)
-				pad.bottom = parentBounds.bottom - parentPosition.y;
-
-			if (pad.width * pad.height == 0) {
-				throw new Error('Cannot have image with size 0 * 0');
+				if (pad.bottom > parentBounds.bottom - parentPosition.y)
+					pad.bottom = parentBounds.bottom - parentPosition.y;
 			}
+		}
+
+		// Disjoint intersections can have negative extents. Neither these nor
+		// zero/non-finite dimensions are valid render targets.
+		if (!Number.isFinite(pad.x) || !Number.isFinite(pad.y)
+			|| !Number.isFinite(pad.width) || !Number.isFinite(pad.height)
+			|| pad.width <= 0 || pad.height <= 0) {
+			pad.setTo(0, 0, 0, 0);
+		} else {
+			// Clipping against a scaled parent can leave a subpixel strip.
+			// Image2D rounds dimensions, so a positive extent below 0.5 would
+			// otherwise become a zero-sized GPU texture. Cover the complete
+			// intersection with integer pixels, keeping projection and UVs in
+			// sync with the allocated image.
+			const right = Math.ceil(pad.right);
+			const bottom = Math.ceil(pad.bottom);
+			pad.x = Math.floor(pad.x);
+			pad.y = Math.floor(pad.y);
+			pad.width = right - pad.x;
+			pad.height = bottom - pad.y;
 		}
 	}
 

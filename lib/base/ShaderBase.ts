@@ -733,6 +733,10 @@ export class ShaderBase implements IShaderBase {
 		//check if alpha needs to be pre-multipled
 		if (this.usesPremultipliedAlpha) {
 			const target = this._sharedRegisters.shadedTarget;
+			// Flash color transforms can produce alpha outside [0, 1]. Clamp
+			// before premultiplying RGB, otherwise alpha > 1 brightens cached
+			// text and images even though framebuffer alpha is saturated later.
+			this._postAnimationFragmentCode += `sat ${target}.w, ${target}.w\n`;
 			this._postAnimationFragmentCode += `mul ${target}.xyz, ${target}, ${target}.w\n`;
 		}
 

@@ -263,9 +263,8 @@ export class MeshView<T extends {} = never> {
 			if (i % polySize === 0) {
 				poly = new PolygonView<T>();
 				poly.userData = userDataCtor ? new userDataCtor() : null;
+				mesh.poly.push(poly);
 			}
-
-			mesh.poly.push(poly);
 
 			const v = new Vertice3DView();
 			poly.add(v);
