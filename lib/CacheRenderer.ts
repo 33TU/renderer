@@ -3,6 +3,7 @@ import {
 	IAssetClass,
 	Matrix3D,
 	PerspectiveProjection,
+	Rectangle,
 } from '@awayjs/core';
 import {
 	AttributesBuffer,
@@ -164,14 +165,16 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 			let sourceImage = reuseSource ? this._blendSource
 				: (msaa || useNonNativeBlend) ? temporary(msaa) : targetImage;
 
+			let backdropImage: Image2D;
+			let backdropRect: Rectangle;
 			if (useNonNativeBlend && this.useCroppedBlend) {
 				const parent = this.parentRenderer;
-				const backdrop = parent.flushBlendBackdrop();
+				backdropImage = parent.flushBlendBackdrop();
 				const parentBounds = parent.getPaddedBounds();
 				const rect = bounds.clone();
 				rect.x -= parentBounds.x;
 				rect.y -= parentBounds.y;
-				manager.copyPixels(backdrop, targetImage, rect, targetImage.rect.topLeft);
+				backdropRect = rect;
 				this._disableClear = false;
 			} else if (useNonNativeBlend) {
 				const parent = this.parentRenderer;
@@ -227,7 +230,11 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 				}
 			}
 
-			if (useNonNativeBlend || (!filtered && sourceImage !== targetImage)) {
+			const composed = backdropImage && manager.compositePixels(
+				sourceImage, backdropImage, targetImage, targetImage.rect, backdropRect, <string> container.blendMode);
+			if (!composed && (useNonNativeBlend || (!filtered && sourceImage !== targetImage))) {
+				if (backdropImage)
+					manager.copyPixels(backdropImage, targetImage, backdropRect, targetImage.rect.topLeft);
 				manager.copyPixels(sourceImage, targetImage, targetImage.rect, targetImage.rect.topLeft,
 					useNonNativeBlend, useNonNativeBlend ? <string> container.blendMode : '');
 			}
