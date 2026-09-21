@@ -1,5 +1,6 @@
 import {
 	Matrix3D,
+	PerspectiveProjection,
 	Plane3D,
 	Vector3D,
 	AbstractionBase,
@@ -82,6 +83,8 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 	private _bounds: Box = new Box();
 	protected _style: Style;
 	private _boundsDirty: boolean = true;
+	private _blendAccumulator: CacheRenderer = null;
+	private _cropBlend = false;
 	private _mappers: Array<IMapper> = new Array<IMapper>();
 	private _elementsPools: Record<string, _Render_ElementsBase> = {};
 
@@ -261,6 +264,11 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 				&& !isNativeBlend(<string> (<ContainerNode> this._asset).container.blendMode);
 	}
 
+	/** Direct children of the scene renderer share its capture coordinates. */
+	public get useCroppedBlend(): boolean {
+		return this._cropBlend;
+	}
+
 	constructor() {
 		super();
 
@@ -302,6 +310,8 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 		this.view.removeEventListener(ViewEvent.INVALIDATE_SIZE, this._onSizeInvalidateDelegate);
 
 		this.parentRenderer = null;
+		this._blendAccumulator = null;
+		this._cropBlend = false;
 
 		this._parentNode = null;
 		this.view = null;
@@ -406,7 +416,14 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 		 */
 
 		this.traverse();
-
+		if (this._blendAccumulator && (this._opaqueRenderables.length || this._blendedRenderables.length > 1)) {
+			this.stage.pushRenderTargetConfig();
+			try {
+				this.flushBlendBackdrop();
+			} finally {
+				this.stage.popRenderTarget();
+			}
+		}
 		this.executeRender(enableDepthAndStencil, surfaceSelector, mipmapSelector);
 
 		//line required for correct rendering when using away3d with starling.
@@ -421,6 +438,96 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 		}
 	}
 
+	/** Extend the scene backdrop only with commands collected since the last blend. */
+	public flushBlendBackdrop(): Image2D {
+		const cache = this._blendAccumulator;
+		const image = <Image2D> cache.style.image;
+		const quad = this._blendedRenderables.find((r) => r.renderable === cache);
+		const projection = this.view.projection;
+		const target = this.view.target;
+		const disableClear = this._disableClear;
+		const blended = this._blendedRenderables;
+		const opaque = this._opaqueRenderables;
+		const pending = blended.filter((r) => r !== quad);
+		if (!pending.length && !opaque.length)
+			return image;
+		const manager = this.stage.filterManager;
+		const msaa = this.stage.context.glVersion === 2 && StageSettings.ENABLE_MULTISAMPLE_TEXTURE;
+		let temporary: Image2D;
+		try {
+			this.view.projection = new PerspectiveProjection();
+			if (msaa) {
+				// Antialias only the changed region. A full-scene MSAA target
+				// would require resolving the whole viewport at every overlay.
+				const bounds = this.getBlendBatchBounds(opaque.concat(pending));
+				if (bounds.width > 0 && bounds.height > 0) {
+					temporary = manager.popTemp(bounds.width, bounds.height, true);
+					this._initRender(temporary, bounds);
+					this._blendedRenderables = [quad];
+					this._opaqueRenderables = [];
+					this._disableClear = false;
+					this.executeRender(true);
+					this._blendedRenderables = pending;
+					this._opaqueRenderables = opaque;
+					this._disableClear = true;
+					this.executeRender(true);
+					const destination = bounds.topLeft;
+					destination.x -= this._paddedBounds.x;
+					destination.y -= this._paddedBounds.y;
+					manager.copyPixels(temporary, image,
+						new Rectangle(0, 0, bounds.width, bounds.height), destination);
+				}
+			} else {
+				// Never sample the accumulator while writing directly to it.
+				this._initRender(image);
+				this._blendedRenderables = pending;
+				this._disableClear = true;
+				this.executeRender(true);
+			}
+			this.resetHead();
+			this._blendedRenderables.push(quad);
+		} catch (error) {
+			this._blendedRenderables = blended;
+			this._opaqueRenderables = opaque;
+			throw error;
+		} finally {
+			if (temporary)
+				manager.pushTemp(temporary);
+			this._disableClear = disableClear;
+			this.view.target = target;
+			this.view.projection = projection;
+		}
+		return image;
+	}
+
+	private getBlendBatchBounds(renderables: _Render_RenderableBase[]): Rectangle {
+		let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+		for (const r of renderables) {
+			let bounds: Rectangle;
+			if (r.renderable.assetType === CacheRenderer.assetType) {
+				bounds = (<CacheRenderer> r.renderable).getPaddedBounds();
+			} else {
+				const box = PickGroup.getInstance().getBoundsPicker(r.entity.node).getBoxBounds(this.node, true, true);
+				if (!box)
+					return this._paddedBounds.clone();
+				const scale = this._boundsScale;
+				bounds = new Rectangle(box.x * scale, box.y * scale, box.width * scale, box.height * scale);
+			}
+			if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite))
+				return this._paddedBounds.clone();
+			left = Math.min(left, bounds.left);
+			top = Math.min(top, bounds.top);
+			right = Math.max(right, bounds.right);
+			bottom = Math.max(bottom, bounds.bottom);
+		}
+		const pad = this._paddedBounds;
+		left = Math.max(pad.left, Math.floor(left - 2));
+		top = Math.max(pad.top, Math.floor(top - 2));
+		right = Math.min(pad.right, Math.ceil(right + 2));
+		bottom = Math.min(pad.bottom, Math.ceil(bottom + 2));
+		return new Rectangle(left, top, Math.max(0, right - left), Math.max(0, bottom - top));
+	}
+
 	public resetHead(): void {
 		//reset head values
 		this._blendedRenderables = [];
@@ -430,6 +537,7 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 
 	public traverse(): void {
 		this.resetHead();
+		this._blendAccumulator = null;
 
 		this._invalid = false;
 		this._pNumElements = 0;
@@ -715,6 +823,14 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 
 			traverser.renderableSorter = null;
 			traverser.parentRenderer = this;
+			const crop = !!(traverser.useNonNativeBlend && !this.parentRenderer && !this.view.target && this._blendAccumulator);
+			if (traverser._cropBlend !== crop) {
+				traverser._cropBlend = crop;
+				traverser._invalid = true;
+				traverser._boundsDirty = true;
+				for (const key in traverser._renderObjects)
+					traverser._renderObjects[key]._onInvalidateElements();
+			}
 			const paddedBounds = traverser.getPaddedBounds();
 			// Empty or fully clipped caches have no quad to submit. Keep the
 			// renderer alive so normal invalidation can make it visible again.
@@ -739,6 +855,9 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 
 			//apply CacheRenderer as renderable
 			this.applyTraversable(traverser);
+			if (!this.parentRenderer && !this.view.target && traverser.useNonNativeBlend && !crop
+				&& !rootNode.getMaskOwners()?.length)
+				this._blendAccumulator = traverser;
 
 			return traverser;
 		}
@@ -954,6 +1073,21 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 
 			this._parentPosition = this.parentRenderer.getParentPosition().clone();
 			this._style.sampler = new ImageSampler(false, false, false);
+			if (this.useCroppedBlend) {
+				pad.setTo(this._bounds.x, this._bounds.y, this._bounds.width, this._bounds.height);
+				if (container.filters && container.filters.length > 0) {
+					container.filters.forEach((e) => e && (e.imageScale = scale));
+					this.stage.filterManager.computeFiltersPadding(pad, container.filters, pad);
+				}
+				pad.inflate(2, 2);
+				if (!rootView.target) {
+					pad.left = Math.max(pad.left, parentBounds.left);
+					pad.top = Math.max(pad.top, parentBounds.top);
+					pad.right = Math.min(pad.right, parentBounds.right);
+					pad.bottom = Math.min(pad.bottom, parentBounds.bottom);
+				}
+			}
+
 		} else {
 			pad.setTo(
 				this._bounds.x,
@@ -1025,8 +1159,7 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 		}
 	}
 
-	public _initRender(target: Image2D) {
-		const pad = this._paddedBounds;
+	public _initRender(target: Image2D, pad: Rectangle = this._paddedBounds) {
 		const scale = this._boundsScale;
 		const matrix3D = this._renderMatrix;
 		const view = this.view;

@@ -39,6 +39,7 @@ import { IRenderContainer } from './base/IRenderContainer';
 
 export class CacheRenderer extends RendererBase implements IMaterial, IRenderable {
 	public static assetType: string = '[renderer CacheRenderer]';
+	private _blendSource: Image2D = null;
 
 	private _texture: ImageTexture2D;
 	private _textures: ITexture[] = [];
@@ -159,9 +160,20 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 
 		try {
 			// The source must be isolated from the backdrop even without MSAA.
-			let sourceImage = (msaa || useNonNativeBlend) ? temporary(msaa) : targetImage;
+			const reuseSource = this.useCroppedBlend && this._blendSource && !this._invalid;
+			let sourceImage = reuseSource ? this._blendSource
+				: (msaa || useNonNativeBlend) ? temporary(msaa) : targetImage;
 
-			if (useNonNativeBlend) {
+			if (useNonNativeBlend && this.useCroppedBlend) {
+				const parent = this.parentRenderer;
+				const backdrop = parent.flushBlendBackdrop();
+				const parentBounds = parent.getPaddedBounds();
+				const rect = bounds.clone();
+				rect.x -= parentBounds.x;
+				rect.y -= parentBounds.y;
+				manager.copyPixels(backdrop, targetImage, rect, targetImage.rect.topLeft);
+				this._disableClear = false;
+			} else if (useNonNativeBlend) {
 				const parent = this.parentRenderer;
 				const projection = parent.view.projection;
 				const previousTarget = parent.view.target;
@@ -170,7 +182,7 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 				try {
 					parent.view.projection = new PerspectiveProjection();
 					parent._initRender(backdrop);
-					parent.executeRender();
+					parent.executeRender(true);
 					// A masked composite covers only part of the backdrop. Keep
 					// earlier siblings so their pixels outside the mask survive.
 					if (!this._parentNode?.getMaskOwners()?.length)
@@ -184,27 +196,44 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 				this._disableClear = false;
 			}
 
-			this._initRender(sourceImage);
-			super.render(enableDepthAndStencil, surfaceSelector, mipmapSelector, maskConfig);
-
-			//@ts-ignore
-			const filters = container.filters;
 			let filtered = false;
-			if (filters && filters.length > 0) {
-				const scale = this.getBoundsScale();
-				filters.forEach((e) => e && (e.imageScale = scale));
-				// Filters affect the isolated object, never its captured backdrop.
-				const filterTarget = useNonNativeBlend ? temporary() : targetImage;
-				filtered = manager.applyFilters(
-					sourceImage, filterTarget, targetImage.rect, targetImage.rect, filters);
-				if (filtered)
-					sourceImage = filterTarget;
+			if (!reuseSource) {
+				this._initRender(sourceImage);
+				super.render(enableDepthAndStencil, surfaceSelector, mipmapSelector, maskConfig);
+
+				//@ts-ignore
+				const filters = container.filters;
+				if (filters && filters.length > 0) {
+					const scale = this.getBoundsScale();
+					filters.forEach((e) => e && (e.imageScale = scale));
+					// Filters affect the isolated object, never its captured backdrop.
+					const filterTarget = useNonNativeBlend ? temporary() : targetImage;
+					filtered = manager.applyFilters(
+						sourceImage, filterTarget, targetImage.rect, targetImage.rect, filters);
+					if (filtered)
+						sourceImage = filterTarget;
+				}
+
+				if (this.useCroppedBlend) {
+					if (!this._blendSource)
+						this._blendSource = new Image2D(targetImage.width, targetImage.height, false);
+					else
+						this._blendSource._setSize(targetImage.width, targetImage.height);
+					manager.copyPixels(sourceImage, this._blendSource, targetImage.rect, targetImage.rect.topLeft);
+					sourceImage = this._blendSource;
+				} else if (this._blendSource) {
+					this._blendSource.clear();
+					this._blendSource = null;
+				}
 			}
 
 			if (useNonNativeBlend || (!filtered && sourceImage !== targetImage)) {
 				manager.copyPixels(sourceImage, targetImage, targetImage.rect, targetImage.rect.topLeft,
 					useNonNativeBlend, useNonNativeBlend ? <string> container.blendMode : '');
 			}
+		} catch (error) {
+			this._invalid = true;
+			throw error;
 		} finally {
 			for (const image of temporaryImages)
 				manager.pushTemp(image);
@@ -301,11 +330,15 @@ export class CacheRenderer extends RendererBase implements IMaterial, IRenderabl
 	}
 
 	public onInvalidateColorTransform(): void {
+		this._invalid = true;
 		(<ContainerNode> this._asset).invalidateHierarchicalProperty(HierarchicalProperty.COLOR_TRANSFORM);
 		this.invalidate();
 	}
 
 	public onClear(): void {
+		if (this._blendSource)
+			this._blendSource.clear();
+		this._blendSource = null;
 
 		this.removeTexture(this._texture);
 		this._texture.clear();
