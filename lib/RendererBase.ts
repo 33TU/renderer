@@ -452,14 +452,16 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 		if (!pending.length && !opaque.length)
 			return image;
 		const manager = this.stage.filterManager;
-		const msaa = this.stage.context.glVersion === 2 && StageSettings.ENABLE_MULTISAMPLE_TEXTURE;
+		const batch = opaque.concat(pending);
+		const msaa = this.stage.context.glVersion === 2 && StageSettings.ENABLE_MULTISAMPLE_TEXTURE
+			&& this.needsBlendAntialias(batch);
 		let temporary: Image2D;
 		try {
 			this.view.projection = new PerspectiveProjection();
 			if (msaa) {
 				// Antialias only the changed region. A full-scene MSAA target
 				// would require resolving the whole viewport at every overlay.
-				const bounds = this.getBlendBatchBounds(opaque.concat(pending));
+				const bounds = this.getBlendBatchBounds(batch);
 				if (bounds.width > 0 && bounds.height > 0) {
 					temporary = manager.popTemp(bounds.width, bounds.height, true);
 					this._initRender(temporary, bounds);
@@ -498,6 +500,14 @@ export class RendererBase extends AbstractionBase implements IPartitionTraverser
 			this.view.projection = projection;
 		}
 		return image;
+	}
+
+	private needsBlendAntialias(renderables: _Render_RenderableBase[]): boolean {
+		// Cache quads cover integer padded bounds in screen coordinates. Their
+		// source pixels are already antialiased; only new geometry or a mask
+		// needs a multisample target when appending to the backdrop.
+		return renderables.some((r) => r.renderable.assetType !== CacheRenderer.assetType
+			|| !!r.entity.maskOwners?.length);
 	}
 
 	private getBlendBatchBounds(renderables: _Render_RenderableBase[]): Rectangle {
